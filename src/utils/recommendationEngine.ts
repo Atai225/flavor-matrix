@@ -509,7 +509,7 @@ export const DEFAULT_MODELS: Record<AISettings['provider'], string> = {
 
 const ALL_TAGS = [...new Set([...INGREDIENTS.flatMap((i) => i.vibeTags), ...COCKTAILS.flatMap((c) => c.vibeTags)])];
 
-function buildPrompt(text: string): string {
+export function buildPrompt(text: string): string {
   return [
     'Ты — бармен-миксолог. Переведи пожелание гостя в структуру для подбора коктейля.',
     `Пожелание: «${text}»`,
@@ -521,31 +521,104 @@ function buildPrompt(text: string): string {
   ].join('\n');
 }
 
-function extractJson(raw: string): Partial<ParsedQuery> {
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('Модель не вернула JSON');
-  const data = JSON.parse(m[0]) as Partial<ParsedQuery>;
+/** Приводит ответ модели к ParsedQuery, отбрасывая всё неизвестное */
+export function normalizeAI(data: unknown): Partial<ParsedQuery> {
+  const d = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
   const arr = (x: unknown) => (Array.isArray(x) ? x.filter((v): v is string => typeof v === 'string') : []);
   const flavor: ParsedQuery['flavor'] = {};
-  if (data.flavor && typeof data.flavor === 'object') {
-    for (const [k, v] of Object.entries(data.flavor)) {
+  if (d.flavor && typeof d.flavor === 'object') {
+    for (const [k, v] of Object.entries(d.flavor as Record<string, unknown>)) {
       if (['strength', 'sweet', 'sour', 'bitter', 'fresh'].includes(k) && (v === 'high' || v === 'low')) flavor[k as BalanceKey] = v;
     }
   }
   return {
-    wantTags: arr(data.wantTags).filter((t) => ALL_TAGS.includes(t)),
-    avoidTags: arr(data.avoidTags).filter((t) => ALL_TAGS.includes(t)),
-    includeIds: arr(data.includeIds),
-    excludeIds: arr(data.excludeIds),
+    wantTags: arr(d.wantTags).filter((t) => ALL_TAGS.includes(t)),
+    avoidTags: arr(d.avoidTags).filter((t) => ALL_TAGS.includes(t)),
+    includeIds: arr(d.includeIds).filter((id) => INGREDIENT_MAP[id]),
+    excludeIds: arr(d.excludeIds).filter((id) => INGREDIENT_MAP[id]),
     flavor,
     matched: ['ИИ-разбор'],
   };
 }
 
-export async function parseWithAI(text: string, s: AISettings): Promise<Partial<ParsedQuery>> {
+function extractJson(raw: string): Partial<ParsedQuery> {
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('Модель не вернула JSON');
+  return normalizeAI(JSON.parse(m[0]));
+}
+
+/**
+ * Разбор через свой сервер (/api/ai на Vercel): ключ лежит на сервере, пользователям он не нужен.
+ * Возвращает null, если сервера нет (обычный `npm run dev` или статический хостинг).
+ */
+/** Есть ли рядом наш сервер /api/ai с настроенным ключом */
+export async function checkServerAI(): Promise<boolean> {
+  try {
+    const res = await fetch('/api/ai', { method: 'GET' });
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('application/json')) return false;
+    const data = (await res.json()) as { configured?: boolean };
+    return data.configured === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function parseWithServer(text: string): Promise<Partial<ParsedQuery> | null> {
+  let res: Response;
+  try {
+    res = await fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    return null;
+  }
+  // Нет функции — на статическом хостинге вернётся 404/405 или index.html
+  if (res.status === 404 || res.status === 405 || !(res.headers.get('content-type') ?? '').includes('application/json')) return null;
+  const data = (await res.json()) as { query?: unknown; error?: string };
+  if (!res.ok) throw new Error(data.error ?? `сервер ИИ: ошибка ${res.status}`);
+  return { ...normalizeAI(data.query), matched: ['разбор ИИ'] };
+}
+
+/** Разбор запроса встроенным Claude (только в артефакте на claude.ai, ключ не нужен) */
+export async function parseWithClaude(
+  text: string,
+  sample: { json: <T = unknown>(input: string, options?: Record<string, unknown>) => Promise<T> },
+): Promise<Partial<ParsedQuery>> {
+  const data = await sample.json(buildPrompt(text), { modelTier: 'quick' });
+  return { ...normalizeAI(data), matched: ['разбор Claude'] };
+}
+
+/** Убирает пробелы, переносы и невидимые символы, которые часто прилипают при копировании ключа */
+export function cleanApiKey(raw: string): string {
+  return raw.replace(/[\s\u00A0\u200B-\u200D\u2060\uFEFF]/g, '');
+}
+
+/** Ключи OpenAI и Gemini состоят только из латиницы, цифр и знаков вроде «-» и «_» */
+export function apiKeyProblem(raw: string): string | null {
+  const key = cleanApiKey(raw);
+  if (!key) return 'Ключ пустой.';
+  const bad = [...key].find((ch) => !/[\x21-\x7E]/.test(ch));
+  if (bad) return `В ключе есть недопустимый символ «${bad}» — скорее всего, кириллица или «…». Скопируйте ключ заново с сайта провайдера.`;
+  return null;
+}
+
+async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new Error('нет соединения с сервером ИИ. Если вы открыли демо-страницу на claude.ai — там внешние запросы запрещены, запустите проект локально (npm run dev)');
+  }
+}
+
+export async function parseWithAI(text: string, settings: AISettings): Promise<Partial<ParsedQuery>> {
+  const problem = apiKeyProblem(settings.apiKey);
+  if (problem) throw new Error(problem);
+  const s = { ...settings, apiKey: cleanApiKey(settings.apiKey) };
   const prompt = buildPrompt(text);
   if (s.provider === 'openai') {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await safeFetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.apiKey}` },
       body: JSON.stringify({
@@ -555,12 +628,12 @@ export async function parseWithAI(text: string, s: AISettings): Promise<Partial<
         response_format: { type: 'json_object' },
       }),
     });
-    if (!res.ok) throw new Error(`OpenAI: ${res.status}`);
+    if (!res.ok) throw new Error(res.status === 401 ? 'OpenAI отклонил ключ (401) — проверьте его' : `OpenAI: ошибка ${res.status}`);
     const json = await res.json();
     return extractJson(json.choices?.[0]?.message?.content ?? '');
   }
   const model = s.model || DEFAULT_MODELS.gemini;
-  const res = await fetch(
+  const res = await safeFetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
       method: 'POST',
@@ -571,7 +644,7 @@ export async function parseWithAI(text: string, s: AISettings): Promise<Partial<
       }),
     },
   );
-  if (!res.ok) throw new Error(`Gemini: ${res.status}`);
+  if (!res.ok) throw new Error(res.status === 400 || res.status === 403 ? `Gemini отклонил ключ или модель (${res.status})` : `Gemini: ошибка ${res.status}`);
   const json = await res.json();
   return extractJson(json.candidates?.[0]?.content?.parts?.[0]?.text ?? '');
 }

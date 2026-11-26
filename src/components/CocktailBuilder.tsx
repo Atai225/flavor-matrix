@@ -8,6 +8,7 @@ import type { RecipeItem } from '../data/types';
 import {
   BALANCE_LABELS, DILUTION_FORMULA, computeStats, recipeToText, type BalanceReport,
 } from '../utils/mixologyMath';
+import { getClaudeDownloads } from '../utils/claudeBridge';
 import { loadSavedRecipes, storeSavedRecipes, type SavedRecipe } from '../utils/storage';
 import { Bar, Button, Panel, SectionTitle } from './ui';
 
@@ -88,9 +89,20 @@ function CocktailBuilder(props: Props) {
     }
     notify(ok ? 'Карточка рецепта скопирована' : 'Не удалось скопировать — используйте «.txt»');
   };
-  const exportFile = () => {
+  const exportFile = async () => {
     const safe = (name || 'recipe').replace(/[^\p{L}\p{N}_-]+/gu, '_');
-    downloadText(`${safe}.txt`, recipeToText(name || 'Мой коктейль', recipe));
+    const text = recipeToText(name || 'Мой коктейль', recipe);
+    // На claude.ai обычное скачивание запрещено — сохраняем через платформу
+    const downloads = await getClaudeDownloads();
+    if (downloads) {
+      try {
+        await downloads.save({ filename: `${safe}.txt`, data: text });
+      } catch (e) {
+        if ((e as { code?: string })?.code !== 'declined') notify('Не удалось сохранить файл — используйте «Копировать текст»');
+      }
+      return;
+    }
+    downloadText(`${safe}.txt`, text);
   };
 
   return (
@@ -267,7 +279,7 @@ function CocktailBuilder(props: Props) {
           <Button onClick={exportCopy} disabled={!recipe.length}>
             {copied ? <Check size={14} className="text-emerald-400" /> : <ClipboardCopy size={14} />} Копировать текст
           </Button>
-          <Button onClick={exportFile} disabled={!recipe.length}><Download size={14} /> Файл .txt</Button>
+          <Button onClick={() => void exportFile()} disabled={!recipe.length}><Download size={14} /> Файл .txt</Button>
         </div>
         {showSaved && (
           <div className="mt-3 space-y-1">

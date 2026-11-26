@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { KeyRound, X } from 'lucide-react';
-import { DEFAULT_MODELS, type AISettings } from '../utils/recommendationEngine';
+import { DEFAULT_MODELS, apiKeyProblem, cleanApiKey, type AISettings } from '../utils/recommendationEngine';
 import { Button } from './ui';
 
 interface Props {
@@ -13,6 +13,7 @@ export default function SettingsModal({ value, onSave, onClose }: Props) {
   const [provider, setProvider] = useState<AISettings['provider']>(value?.provider ?? 'openai');
   const [apiKey, setApiKey] = useState(value?.apiKey ?? '');
   const [model, setModel] = useState(value?.model ?? DEFAULT_MODELS[value?.provider ?? 'openai']);
+  const keyError = apiKey.trim() ? apiKeyProblem(apiKey) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
@@ -26,8 +27,9 @@ export default function SettingsModal({ value, onSave, onClose }: Props) {
           </button>
         </div>
         <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-          Необязательно. Приложение полностью работает без ключа: подбор идёт по локальному словарю синонимов и тегам. Ключ нужен только для запросов,
-          которые движок не понял (например, «как закат в Барселоне»). Ключ хранится только в этом браузере (localStorage), запрос уходит напрямую провайдеру.
+          Необязательно. Если страница открыта на claude.ai, нестандартные запросы разбирает встроенный Claude — без всякого ключа, от имени того, кто открыл
+          страницу. Ключ OpenAI / Gemini нужен, только если вы запускаете проект у себя (npm run dev) или на своём хостинге. Он хранится только в этом
+          браузере (localStorage), запрос уходит напрямую провайдеру.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-2">
           {(['openai', 'gemini'] as const).map((p) => (
@@ -53,7 +55,9 @@ export default function SettingsModal({ value, onSave, onClose }: Props) {
             placeholder={provider === 'openai' ? 'sk-…' : 'AIza…'}
             className="mt-1 w-full rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-2 font-mono text-sm text-white outline-none focus:border-amber-500/70"
             autoComplete="off"
+            spellCheck={false}
           />
+          {keyError && <span className="mt-1 block text-[11px] text-rose-400">{keyError}</span>}
         </label>
         <label className="mt-3 block text-xs text-zinc-400">
           Модель
@@ -76,9 +80,9 @@ export default function SettingsModal({ value, onSave, onClose }: Props) {
           <Button
             variant="primary"
             className="flex-1 py-2"
-            disabled={!apiKey.trim()}
+            disabled={!apiKey.trim() || !!keyError}
             onClick={() => {
-              onSave({ provider, apiKey: apiKey.trim(), model: model.trim() || DEFAULT_MODELS[provider] });
+              onSave({ provider, apiKey: cleanApiKey(apiKey), model: model.trim() || DEFAULT_MODELS[provider] });
               onClose();
             }}
           >

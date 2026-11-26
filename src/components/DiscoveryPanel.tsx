@@ -8,19 +8,24 @@ import type { Category, Cocktail, RecipeItem } from '../data/types';
 import { BALANCE_LABELS } from '../utils/mixologyMath';
 import {
   MOOD_CHIPS, cocktailStats, composeSignature, isEmptyQuery, matchMood, mergeQueries, parseQuery, parseWithAI,
-  rankByPreferences, similarCocktails, type AISettings, type ParsedQuery,
+  parseWithClaude, parseWithServer, rankByPreferences, similarCocktails, type AISettings, type ParsedQuery,
 } from '../utils/recommendationEngine';
+import { describeSampleError, type ClaudeSample } from '../utils/claudeBridge';
 import { Bar, Button, MatchBadge, Panel, SectionTitle, Tag } from './ui';
 
 interface Props {
   onLoadToLab: (name: string, items: RecipeItem[]) => void;
   aiSettings: AISettings | null;
+  /** Встроенный Claude (есть только в артефакте на claude.ai) */
+  claudeSample: ClaudeSample | null;
+  /** Есть свой сервер /api/ai с ключом (полная версия на Vercel) */
+  serverAI: boolean;
   onOpenSettings: () => void;
 }
 
 type Tab = 'favorite' | 'ingredients' | 'mood';
 
-export default function DiscoveryPanel({ onLoadToLab, aiSettings, onOpenSettings }: Props) {
+export default function DiscoveryPanel({ onLoadToLab, aiSettings, claudeSample, serverAI, onOpenSettings }: Props) {
   const [tab, setTab] = useState<Tab>('favorite');
   const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
     { id: 'favorite', label: 'По любимому коктейлю', icon: <Wine size={15} /> },
@@ -54,7 +59,7 @@ export default function DiscoveryPanel({ onLoadToLab, aiSettings, onOpenSettings
       </div>
       {tab === 'favorite' && <FavoriteTab onLoadToLab={onLoadToLab} />}
       {tab === 'ingredients' && <IngredientsTab onLoadToLab={onLoadToLab} />}
-      {tab === 'mood' && <MoodTab onLoadToLab={onLoadToLab} aiSettings={aiSettings} onOpenSettings={onOpenSettings} />}
+      {tab === 'mood' && <MoodTab onLoadToLab={onLoadToLab} aiSettings={aiSettings} claudeSample={claudeSample} serverAI={serverAI} onOpenSettings={onOpenSettings} />}
     </div>
   );
 }
@@ -375,34 +380,64 @@ function IngredientsTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) 
 // 3. «Хочу чего-то такого…»
 // ─────────────────────────────────────────────────────────────
 
-function MoodTab({ onLoadToLab, aiSettings, onOpenSettings }: Props) {
+function MoodTab({ onLoadToLab, aiSettings, claudeSample, serverAI, onOpenSettings }: Props) {
   const [text, setText] = useState('кислое, освежающее и ягодное');
   const [query, setQuery] = useState<ParsedQuery>(() => parseQuery('кислое, освежающее и ягодное'));
   const [loading, setLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [usedAI, setUsedAI] = useState(false);
+  const [usedAI, setUsedAI] = useState<'claude' | 'server' | 'key' | null>(null);
+  const [claudeOff, setClaudeOff] = useState(false);
+
+  // Порядок: встроенный Claude (артефакт на claude.ai) → свой сервер /api/ai (полная версия)
+  // → личный ключ OpenAI/Gemini → только локальный движок
+  const claude = claudeOff ? null : claudeSample;
+  const hasKey = !!aiSettings?.apiKey;
+  const aiAvailable = !!claude || serverAI || hasKey;
 
   const run = async (value: string, forceAI = false) => {
     setText(value);
     setAiError(null);
     const local = parseQuery(value);
     const needsAI = forceAI || (isEmptyQuery(local) && value.trim().length > 0);
-    if (needsAI && aiSettings?.apiKey) {
-      setLoading(true);
-      try {
-        const ai = await parseWithAI(value, aiSettings);
-        setQuery(mergeQueries(local, ai));
-        setUsedAI(true);
-      } catch (e) {
-        setAiError(e instanceof Error ? e.message : 'Ошибка запроса к ИИ');
-        setQuery(local);
-        setUsedAI(false);
-      } finally {
-        setLoading(false);
-      }
-    } else {
+    if (!needsAI || !aiAvailable) {
       setQuery(local);
-      setUsedAI(false);
+      setUsedAI(null);
+      return;
+    }
+    setLoading(true);
+    try {
+      if (claude) {
+        try {
+          setQuery(mergeQueries(local, await parseWithClaude(value, claude)));
+          setUsedAI('claude');
+          return;
+        } catch (e) {
+          const { message, disable } = describeSampleError(e);
+          if (disable) setClaudeOff(true);
+          if (!hasKey && !serverAI) throw new Error(message);
+        }
+      }
+      if (serverAI) {
+        try {
+          const fromServer = await parseWithServer(value);
+          if (fromServer) {
+            setQuery(mergeQueries(local, fromServer));
+            setUsedAI('server');
+            return;
+          }
+        } catch (e) {
+          if (!hasKey) throw e;
+        }
+      }
+      if (!hasKey) throw new Error('сервер ИИ недоступен');
+      setQuery(mergeQueries(local, await parseWithAI(value, aiSettings!)));
+      setUsedAI('key');
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : 'ошибка запроса к ИИ');
+      setQuery(local);
+      setUsedAI(null);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -430,9 +465,14 @@ function MoodTab({ onLoadToLab, aiSettings, onOpenSettings }: Props) {
             <Button variant="primary" className="flex-1 px-5 py-3 text-sm sm:flex-none">
               {loading ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />} Подобрать
             </Button>
-            {aiSettings?.apiKey ? (
-              <Button variant="cyan" className="px-3 py-3" onClick={() => void run(text, true)} title="Разобрать запрос через ИИ">
-                <Bot size={15} /> ИИ
+            {aiAvailable ? (
+              <Button
+                variant="cyan"
+                className="px-3 py-3"
+                onClick={() => void run(text, true)}
+                title={claude ? 'Разобрать запрос через Claude (без ключа)' : 'Разобрать запрос через ИИ'}
+              >
+                <Bot size={15} /> {claude ? 'Claude' : 'ИИ'}
               </Button>
             ) : (
               <Button className="px-3 py-3" onClick={onOpenSettings} title="Подключить OpenAI / Gemini для нестандартных запросов">
@@ -459,9 +499,10 @@ function MoodTab({ onLoadToLab, aiSettings, onOpenSettings }: Props) {
           <span className="text-zinc-500">Распознано:</span>
           {query.matched.map((m) => <Tag key={m} color="#10B981">{m}</Tag>)}
           {query.negated.map((m) => <Tag key={m} color="#F43F5E">без: {m}</Tag>)}
-          {empty && <span className="text-zinc-500">ничего — попробуйте слова «кислое», «дымное», «кофейное», «без джина»{aiSettings?.apiKey ? '' : ' или подключите ИИ'}.</span>}
-          {usedAI && <Tag color="#06B6D4">разобрано ИИ</Tag>}
-          {aiError && <span className="text-rose-400">ИИ недоступен ({aiError}) — использован локальный движок.</span>}
+          {empty && <span className="text-zinc-500">ничего — попробуйте слова «кислое», «дымное», «кофейное», «без джина»{aiAvailable ? ' — или нажмите «' + (claude ? 'Claude' : 'ИИ') + '»' : ' или подключите ИИ'}.</span>}
+          {usedAI && <Tag color="#06B6D4">{usedAI === 'claude' ? 'разобрано Claude' : 'разобрано ИИ'}</Tag>}
+          {loading && <span className="text-cyan-300">Думаю…</span>}
+          {aiError && <span className="text-rose-400">ИИ недоступен: {aiError}. Использован локальный движок.</span>}
         </div>
       </Panel>
 

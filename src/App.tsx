@@ -10,8 +10,9 @@ import { CATEGORIES, INGREDIENT_MAP, amountRange } from './data/ingredients';
 import { COCKTAIL_MAP, DEFAULT_PRESET_ID } from './data/cocktails';
 import type { RecipeItem } from './data/types';
 import { TIMELINE_MAX, analyzeBalance } from './utils/mixologyMath';
-import type { AISettings } from './utils/recommendationEngine';
+import { checkServerAI, type AISettings } from './utils/recommendationEngine';
 import { loadAISettings, storeAISettings } from './utils/storage';
+import { getClaudeSample, type ClaudeSample } from './utils/claudeBridge';
 
 type Mode = 'lab' | 'discovery';
 const MAX_ITEMS = 10;
@@ -28,6 +29,25 @@ export default function App() {
   const [balanceOn, setBalanceOn] = useState(false);
   const [aiSettings, setAiSettings] = useState<AISettings | null>(() => loadAISettings());
   const [showSettings, setShowSettings] = useState(false);
+  const [claudeSample, setClaudeSample] = useState<ClaudeSample | null>(null);
+  const [serverAI, setServerAI] = useState(false);
+
+  // На claude.ai страница может спрашивать Claude от имени зрителя — без ключа
+  useEffect(() => {
+    let alive = true;
+    void getClaudeSample().then((s) => {
+      if (alive) setClaudeSample(() => s);
+    });
+    // На своём хостинге (Vercel) — серверная функция /api/ai с ключом владельца
+    if (window.location.protocol.startsWith('http')) {
+      void checkServerAI().then((ok) => {
+        if (alive) setServerAI(ok);
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, []);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
 
@@ -202,7 +222,7 @@ export default function App() {
           title="Настройки ИИ (необязательно)"
         >
           <Settings2 size={14} />
-          <span className="hidden md:inline">ИИ {aiSettings?.apiKey ? '· вкл' : '· выкл'}</span>
+          <span className="hidden md:inline">ИИ {claudeSample ? '· Claude' : serverAI ? '· сервер' : aiSettings?.apiKey ? '· вкл' : '· выкл'}</span>
         </button>
       </header>
 
@@ -291,7 +311,7 @@ export default function App() {
 
       {mode === 'discovery' && (
         <main className="thin-scroll min-h-0 flex-1 overflow-y-auto">
-          <DiscoveryPanel onLoadToLab={loadFromDiscovery} aiSettings={aiSettings} onOpenSettings={() => setShowSettings(true)} />
+          <DiscoveryPanel onLoadToLab={loadFromDiscovery} aiSettings={aiSettings} claudeSample={claudeSample} serverAI={serverAI} onOpenSettings={() => setShowSettings(true)} />
         </main>
       )}
 
