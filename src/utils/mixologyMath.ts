@@ -183,9 +183,10 @@ function pickCandidates(
   filter: (i: Ingredient) => boolean,
   fit: (i: Ingredient) => number,
   limit: number,
+  nonAlcoholic = false,
 ): { ing: Ingredient; score: number; syn: number }[] {
   const inRecipe = new Set(recipe.map((r) => r.id));
-  return INGREDIENTS.filter((i) => !inRecipe.has(i.id) && filter(i))
+  return INGREDIENTS.filter((i) => !inRecipe.has(i.id) && filter(i) && !(nonAlcoholic && i.abv > 0))
     .map((ing) => {
       const syn = recipeSynergy(ing.id, recipe);
       return { ing, syn, score: syn + fit(ing) * 4 };
@@ -195,11 +196,12 @@ function pickCandidates(
     .slice(0, limit);
 }
 
-export function analyzeBalance(recipe: RecipeItem[]): BalanceReport {
+export function analyzeBalance(recipe: RecipeItem[], opts: { nonAlcoholic?: boolean } = {}): BalanceReport {
   if (recipe.length === 0) {
     return { verdict: 'Шейкер пуст — добавьте основу.', ok: false, issues: ['Нет ингредиентов'], suggestions: [] };
   }
   const s = computeStats(recipe);
+  const na = !!opts.nonAlcoholic;
   const b = s.balance;
   const issues: string[] = [];
   const suggestions: BalanceSuggestion[] = [];
@@ -211,41 +213,41 @@ export function analyzeBalance(recipe: RecipeItem[]): BalanceReport {
   };
   const cat = (...cats: Category[]) => (i: Ingredient) => cats.includes(i.category);
 
-  if (!has(recipe, (i) => i.category === 'spirit') && s.abv < 6) {
-    issues.push('Нет крепкой основы — напиток рассыпается.');
-    push(pickCandidates(recipe, cat('spirit'), () => 0, 2), 'Крепкая основа');
+  if (!has(recipe, (i) => i.category === 'spirit') && (na || s.abv < 6)) {
+    issues.push(na ? 'Нет основы — напиток получится жидким.' : 'Нет крепкой основы — напиток рассыпается.');
+    push(pickCandidates(recipe, cat('spirit'), () => 0, 2, na), 'Крепкая основа');
   }
   if (b.sour - b.sweet > 2) {
     issues.push('Кислотность перекрывает сладость — нужен подсластитель.');
-    push(pickCandidates(recipe, (i) => i.category === 'syrup' || (i.category === 'liqueur' && i.profile.sweet >= 7), (i) => i.profile.sweet / 10, 2), 'Смягчит кислоту');
+    push(pickCandidates(recipe, (i) => i.category === 'syrup' || (i.category === 'liqueur' && i.profile.sweet >= 7), (i) => i.profile.sweet / 10, 2, na), 'Смягчит кислоту');
   }
   if (b.sweet - b.sour > 2.5 && b.bitter < 5) {
     issues.push('Слишком сладко — добавьте кислоту или горечь.');
-    push(pickCandidates(recipe, cat('citrus'), (i) => i.profile.sour / 10, 2), 'Освежит сладость');
+    push(pickCandidates(recipe, cat('citrus'), (i) => i.profile.sour / 10, 2, na), 'Освежит сладость');
   }
   if (b.bitter > 7.5 && b.sweet < 4) {
     issues.push('Резкая горечь без опоры — смягчите сладким модификатором.');
-    push(pickCandidates(recipe, (i) => i.category === 'syrup' || i.category === 'liqueur', (i) => i.profile.sweet / 10 - i.profile.bitter / 20, 2), 'Обнимет горечь');
+    push(pickCandidates(recipe, (i) => i.category === 'syrup' || i.category === 'liqueur', (i) => i.profile.sweet / 10 - i.profile.bitter / 20, 2, na), 'Обнимет горечь');
   }
-  if (b.strength > 8.5 && b.sweet < 3.5 && b.bitter < 3.5 && b.sour < 2) {
+  if (!na && b.strength > 8.5 && b.sweet < 3.5 && b.bitter < 3.5 && b.sour < 2) {
     issues.push('Голый спирт — нужен модификатор (вермут, ликёр, биттер).');
-    push(pickCandidates(recipe, (i) => i.category === 'liqueur' || (i.category === 'botanical' && i.defaultUnit === 'dash' && i.abv > 0), () => 0.5, 2), 'Модификатор');
+    push(pickCandidates(recipe, (i) => i.category === 'liqueur' || (i.category === 'botanical' && i.defaultUnit === 'dash' && i.abv > 0), () => 0.5, 2, na), 'Модификатор');
   }
   if (b.fresh < 2.5) {
     issues.push('Мало аромата — не хватает трав, биттера или специй.');
-    push(pickCandidates(recipe, cat('botanical'), (i) => i.profile.herbal / 10, 2), 'Ароматический акцент');
+    push(pickCandidates(recipe, cat('botanical'), (i) => i.profile.herbal / 10, 2, na), 'Ароматический акцент');
   }
-  if (b.strength < 2 && has(recipe, (i) => i.category === 'spirit')) {
+  if (!na && b.strength < 2 && has(recipe, (i) => i.category === 'spirit' && i.abv > 0)) {
     issues.push('Очень разбавлено — уменьшите миксер или добавьте основу.');
   }
 
   const ok = issues.length === 0;
   if (ok) {
     // Даже у хорошего рецепта подсветим лучший «связующий» акцент
-    push(pickCandidates(recipe, () => true, () => 0, 2), 'Лучшая синергия для твиста');
+    push(pickCandidates(recipe, () => true, () => 0, 2, na), 'Лучшая синергия для твиста');
   }
   const verdict = ok
-    ? 'Баланс в норме: сладость, кислота и крепость держат друг друга.'
+    ? na ? 'Баланс в норме: сладость, кислота и горечь держат друг друга.' : 'Баланс в норме: сладость, кислота и крепость держат друг друга.'
     : `Найдено отклонений: ${issues.length}. Подсвечиваю связующие ингредиенты в 3D.`;
   return { verdict, ok, issues, suggestions: suggestions.slice(0, 4) };
 }

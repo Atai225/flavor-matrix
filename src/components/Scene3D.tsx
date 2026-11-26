@@ -13,6 +13,8 @@ export interface Scene3DProps {
   time: number;
   /** Узлы, подсвеченные кнопкой «Сбалансировать» */
   suggestedIds: string[];
+  /** Режим 0%: алкогольные узлы приглушены */
+  naMode: boolean;
   onSelect: (id: string | null) => void;
   onAdd: (id: string) => void;
 }
@@ -360,7 +362,7 @@ export default function Scene3D(props: Scene3DProps) {
       lastTime = now;
       elapsed += dt;
       const k = 1 - Math.exp(-dt * 7);
-      const { recipeIds, selectedId, time, suggestedIds } = propsRef.current;
+      const { recipeIds, selectedId, time, suggestedIds, naMode } = propsRef.current;
       const recipe = new Set(recipeIds);
       const suggested = new Set(suggestedIds);
       const selNode = selectedId ? nodeById.get(selectedId) : undefined;
@@ -397,6 +399,10 @@ export default function Scene3D(props: Scene3DProps) {
           sc = Math.max(sc, 1.15 + 0.15 * pulse);
           rg = 1;
         }
+        if (naMode && !inRecipe && id !== selectedId) {
+          if (n.ing.abv > 0) { op *= 0.3; gl *= 0.25; sc *= 0.85; }
+          else if (n.ing.naAlternative && !selNode) { gl = Math.max(gl, 0.6); rg = Math.max(rg, 0.35); }
+        }
         if (id === hoveredId) { sc *= 1.15; op = Math.max(op, 0.85); }
 
         n.cur.op += (op - n.cur.op) * k;
@@ -409,7 +415,7 @@ export default function Scene3D(props: Scene3DProps) {
         n.glow.scale.setScalar(2.4 + n.cur.glow * 2.6);
         n.mesh.scale.setScalar(n.cur.scale);
         n.ring.material.opacity = n.cur.ring;
-        n.ring.material.color.set(suggested.has(id) ? 0x10b981 : id === selectedId ? 0x06b6d4 : 0xf59e0b);
+        n.ring.material.color.set(suggested.has(id) || (naMode && n.ing.naAlternative && !inRecipe) ? 0x10b981 : id === selectedId ? 0x06b6d4 : 0xf59e0b);
         n.ring.scale.setScalar(2.2 * n.cur.scale + (suggested.has(id) ? 0.3 * Math.sin(elapsed * 4) : 0));
         n.label.style.opacity = String(Math.max(0.1, Math.min(1, n.cur.op * (selNode && !linked.has(id) && id !== selectedId ? 0.9 : 1))));
 

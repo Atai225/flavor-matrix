@@ -1,4 +1,4 @@
-import { COCKTAILS, COCKTAIL_MAP } from '../data/cocktails';
+import { COCKTAILS } from '../data/cocktails';
 import { INGREDIENTS, INGREDIENT_MAP, getIngredient, synergyBetween } from '../data/ingredients';
 import type { Category, Cocktail, Ingredient, RecipeItem } from '../data/types';
 import { computeStats, type Balance, type BalanceKey, type RecipeStats } from './mixologyMath';
@@ -82,7 +82,8 @@ export interface SimilarResult {
   curated: boolean;
 }
 
-export function similarCocktails(id: string, limit = 4): SimilarResult[] {
+export function similarCocktails(id: string, limit = 4, pool: Cocktail[] = COCKTAILS): SimilarResult[] {
+  const COCKTAIL_MAP: Record<string, Cocktail> = Object.fromEntries(pool.map((c) => [c.id, c]));
   const base = COCKTAIL_MAP[id];
   if (!base) return [];
   const baseIds = new Set(base.ingredients.map((i) => i.id));
@@ -106,7 +107,7 @@ export function similarCocktails(id: string, limit = 4): SimilarResult[] {
       curated: true,
     }));
   const taken = new Set([base.id, ...curated.map((c) => c.cocktail.id)]);
-  const computed = COCKTAILS.filter((c) => !taken.has(c.id))
+  const computed = pool.filter((c) => !taken.has(c.id))
     .map((c) => ({ cocktail: c, score: scoreOf(c), note: explainDifference(base, c), curated: false }))
     .sort((a, b) => b.score - a.score);
   return [...curated, ...computed].slice(0, limit);
@@ -127,10 +128,11 @@ export function rankByPreferences(
   likes: string[],
   dislikes: string[],
   blockedCategories: Category[] = [],
+  pool: Cocktail[] = COCKTAILS,
 ): PreferenceResult[] {
   const likeSet = new Set(likes);
   const dislikeSet = new Set(dislikes);
-  return COCKTAILS.map((c) => {
+  return pool.map((c) => {
     const ids = c.ingredients.map((i) => i.id);
     const blockedBy = ids
       .filter((id) => dislikeSet.has(id) || blockedCategories.includes(getIngredient(id).category))
@@ -309,8 +311,8 @@ export interface MoodResult {
   hits: string[];
 }
 
-export function matchMood(q: ParsedQuery, limit = 3): MoodResult[] {
-  return COCKTAILS.map((c) => {
+export function matchMood(q: ParsedQuery, limit = 3, pool: Cocktail[] = COCKTAILS): MoodResult[] {
+  return pool.map((c) => {
     const own = new Set(c.vibeTags);
     const all = cocktailTags(c);
     const ids = new Set(c.ingredients.map((i) => i.id));
@@ -386,9 +388,10 @@ const ADJ: Record<string, string> = {
 const BASE_SHORT: Record<string, string> = {
   gin: 'джин', bourbon: 'бурбон', scotch: 'скотч', dark_rum: 'ром', white_rum: 'ром', vodka: 'водка',
   tequila: 'текила', mezcal: 'мескаль', absinthe: 'абсент', jagermeister: 'егерь',
+  na_gin: 'джин', na_spirit: 'дистиллят', smoky_tea: 'чай',
 };
 
-export function composeSignature(q: ParsedQuery): SignatureRecipe {
+export function composeSignature(q: ParsedQuery, opts: { nonAlcoholic?: boolean } = {}): SignatureRecipe {
   const excluded = new Set(q.excludeIds);
   const blockedTag = (i: Ingredient) => i.vibeTags.some((t) => q.avoidTags.includes(t) && t !== 'классика');
   const chosen: { id: string; amount: number; role: string }[] = [];
@@ -399,7 +402,9 @@ export function composeSignature(q: ParsedQuery): SignatureRecipe {
     return ids.reduce((s, x) => s + synergyBetween(id, x), 0) / ids.length;
   };
   const pick = (filter: (i: Ingredient) => boolean, role: string, amountOf: (i: Ingredient) => number, minSyn = 0) => {
-    const cands = INGREDIENTS.filter((i) => filter(i) && !excluded.has(i.id) && !chosenIds().includes(i.id) && !blockedTag(i))
+    const cands = INGREDIENTS.filter(
+      (i) => filter(i) && !excluded.has(i.id) && !chosenIds().includes(i.id) && !blockedTag(i) && !(opts.nonAlcoholic && i.abv > 0),
+    )
       .map((i) => ({ i, syn: synergyWithChosen(i.id), fit: ingredientFit(i, q) }))
       .filter((c) => chosen.length === 0 || c.syn >= minSyn)
       .sort((a, b) => b.fit * 18 + b.syn - (a.fit * 18 + a.syn));
@@ -448,7 +453,8 @@ export function composeSignature(q: ParsedQuery): SignatureRecipe {
       (i) => (i.profile.bitter >= 5 || i.id.includes('vermouth') ? 25 : 15),
       1,
     );
-    pick((i) => i.category === 'botanical' && i.defaultUnit === 'dash' && i.abv > 0, 'Биттер', () => 2, 1);
+    if (opts.nonAlcoholic) pick((i) => i.category === 'botanical' && i.defaultUnit === 'dash', 'Аромат', (i) => i.defaultAmount, 1);
+    else pick((i) => i.category === 'botanical' && i.defaultUnit === 'dash' && i.abv > 0, 'Биттер', () => 2, 1);
   }
   // 5) Миксер для длинных напитков
   if (wantsMixer) pick((i) => i.category === 'mixer', 'Долив', () => 100, 1);
@@ -469,7 +475,7 @@ export function composeSignature(q: ParsedQuery): SignatureRecipe {
   const style = stats.method === 'build' ? 'хайбол' : stats.method === 'shake' ? 'сауэр' : 'стир';
   const baseName = base ? BASE_SHORT[base.id] ?? base.name.toLowerCase() : 'микс';
   return {
-    name: `${adj} ${baseName}-${style}`,
+    name: `${adj} ${baseName}-${style}${opts.nonAlcoholic ? ' 0%' : ''}`,
     items,
     roles: chosen.map((c) => ({ id: c.id, role: c.role })),
     synergy,

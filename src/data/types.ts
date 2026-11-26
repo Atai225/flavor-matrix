@@ -47,6 +47,8 @@ export interface Ingredient {
   secondaryPhase?: TastingPhase;
   /** Газированный миксер */
   carbonated?: boolean;
+  /** Безалкогольная альтернатива классическому ингредиенту */
+  naAlternative?: boolean;
   vibeTags: string[];
   /** Цвет узла в 3D */
   color: string;

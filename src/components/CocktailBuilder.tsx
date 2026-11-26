@@ -9,10 +9,13 @@ import {
   BALANCE_LABELS, DILUTION_FORMULA, computeStats, recipeToText, type BalanceReport,
 } from '../utils/mixologyMath';
 import { getClaudeDownloads } from '../utils/claudeBridge';
+import { hasAlcohol } from '../utils/nonAlcoholic';
 import { loadSavedRecipes, storeSavedRecipes, type SavedRecipe } from '../utils/storage';
 import { Bar, Button, Panel, SectionTitle } from './ui';
 
 interface Props {
+  naMode: boolean;
+  onMakeNonAlcoholic: () => void;
   name: string;
   recipe: RecipeItem[];
   selectedId: string | null;
@@ -63,7 +66,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 function CocktailBuilder(props: Props) {
-  const { name, recipe, selectedId, balance, onRename, onAmount, onRemove, onClear, onSelect, onLoad, onAdd, onBalance, notify } = props;
+  const { naMode, onMakeNonAlcoholic, name, recipe, selectedId, balance, onRename, onAmount, onRemove, onClear, onSelect, onLoad, onAdd, onBalance, notify } = props;
   const stats = computeStats(recipe);
   const [saved, setSaved] = useState<SavedRecipe[]>(() => loadSavedRecipes());
   const [showSaved, setShowSaved] = useState(false);
@@ -128,7 +131,7 @@ function CocktailBuilder(props: Props) {
             </select>
           }
         >
-          Конструктор коктейля
+          Конструктор коктейля{naMode && <span className="ml-2 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300">0%</span>}
         </SectionTitle>
         <input
           value={name}
@@ -185,6 +188,11 @@ function CocktailBuilder(props: Props) {
             );
           })}
         </div>
+        {hasAlcohol(recipe) && (
+          <Button variant="emerald" className="mt-3 w-full py-2" onClick={onMakeNonAlcoholic}>
+            <GlassWater size={14} /> Сделать безалкогольным (0%)
+          </Button>
+        )}
         {recipe.length > 0 && (
           <div className="mt-2 flex justify-end">
             <button type="button" onClick={onClear} className="text-[11px] text-zinc-500 transition hover:text-rose-400">
@@ -199,7 +207,12 @@ function CocktailBuilder(props: Props) {
         <SectionTitle icon={<GlassWater size={13} className="text-cyan-400" />}>Техническая карточка</SectionTitle>
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Объём" value={`${stats.volume.toFixed(0)} мл`} sub={`→ ${stats.finalVolume.toFixed(0)} мл со льдом`} />
-          <Stat label="Крепость" value={`${stats.abv.toFixed(1)}%`} sub={`до льда ${stats.abvBefore.toFixed(1)}%`} accent />
+          <Stat
+            label="Крепость"
+            value={`${stats.abv.toFixed(1)}%`}
+            sub={recipe.length && stats.alcoholMl === 0 ? 'безалкогольный ✓' : `до льда ${stats.abvBefore.toFixed(1)}%`}
+            accent
+          />
           <Stat label="Метод (авто)" value={METHOD_LABEL[stats.method].split(' · ')[0]} sub={METHOD_LABEL[stats.method].split(' · ')[1]} />
           <Stat label="Бокал" value={GLASS_LABEL[stats.glass].split(' · ')[0]} sub={GLASS_LABEL[stats.glass].split(' · ')[1]} />
         </div>

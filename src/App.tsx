@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Beaker, Compass, MousePointerClick, Settings2 } from 'lucide-react';
+import { Beaker, Compass, GlassWater, MousePointerClick, Settings2 } from 'lucide-react';
 import Scene3D from './components/Scene3D';
 import TastingTimeline from './components/TastingTimeline';
 import NodeInspector from './components/NodeInspector';
@@ -11,7 +11,8 @@ import { COCKTAIL_MAP, DEFAULT_PRESET_ID } from './data/cocktails';
 import type { RecipeItem } from './data/types';
 import { TIMELINE_MAX, analyzeBalance } from './utils/mixologyMath';
 import { checkServerAI, type AISettings } from './utils/recommendationEngine';
-import { loadAISettings, storeAISettings } from './utils/storage';
+import { loadAISettings, loadNAMode, storeAISettings, storeNAMode } from './utils/storage';
+import { hasAlcohol, naName, naReplacementFor, toNonAlcoholic } from './utils/nonAlcoholic';
 import { getClaudeSample, type ClaudeSample } from './utils/claudeBridge';
 
 type Mode = 'lab' | 'discovery';
@@ -57,6 +58,11 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
+  // ── Безалкогольный режим ──
+  const [naMode, setNaMode] = useState<boolean>(() => loadNAMode());
+  const naRef = useRef(naMode);
+  naRef.current = naMode;
+
   // ── Операции с рецептом ──
   const recipeRef = useRef(recipe);
   recipeRef.current = recipe;
@@ -64,7 +70,21 @@ export default function App() {
   timeRef.current = time;
 
   const addIngredient = useCallback(
-    (id: string, amount?: number) => {
+    (rawId: string, amount?: number) => {
+      let id = rawId;
+      // В режиме 0% алкогольный ингредиент заменяем его безалкогольной альтернативой
+      if (naRef.current) {
+        const rep = naReplacementFor(rawId);
+        if (rep === null) {
+          notify(`${INGREDIENT_MAP[rawId].name}: в режиме 0% заменить нечем`);
+          return;
+        }
+        if (rep) {
+          notify(`0%: вместо «${INGREDIENT_MAP[rawId].name}» — ${INGREDIENT_MAP[rep.id].name}`);
+          id = rep.id;
+          amount = undefined;
+        }
+      }
       const ing = INGREDIENT_MAP[id];
       const current = recipeRef.current;
       if (!ing) return;
@@ -77,7 +97,7 @@ export default function App() {
         return;
       }
       setRecipe([...current, { id, amount: amount ?? ing.defaultAmount }]);
-      notify(`+ ${ing.name} в шейкере`);
+      if (id === rawId) notify(`+ ${ing.name} в шейкере`);
     },
     [notify],
   );
@@ -94,8 +114,14 @@ export default function App() {
   }, []);
   const loadRecipe = useCallback(
     (name: string, items: RecipeItem[], autoplay = false) => {
-      setRecipeName(name);
-      setRecipe(items.filter((i) => INGREDIENT_MAP[i.id]).map((i) => ({ ...i })));
+      let list = items.filter((i) => INGREDIENT_MAP[i.id]).map((i) => ({ ...i }));
+      let title = name;
+      if (naRef.current && hasAlcohol(list)) {
+        list = toNonAlcoholic(list).items;
+        title = naName(name);
+      }
+      setRecipeName(title);
+      setRecipe(list);
       setSelectedId(null);
       setTime(0);
       setPlaying(autoplay);
@@ -103,6 +129,30 @@ export default function App() {
     },
     [],
   );
+  /** Перевести текущий рецепт в безалкогольный */
+  const makeNonAlcoholic = useCallback(() => {
+    const current = recipeRef.current;
+    if (!hasAlcohol(current)) return;
+    const { items, swaps } = toNonAlcoholic(current);
+    setRecipe(items);
+    setRecipeName((n) => naName(n || 'Мой коктейль'));
+    notify(`Готово: ${swaps.length} ${swaps.length === 1 ? 'замена' : swaps.length < 5 ? 'замены' : 'замен'}, крепость 0%`);
+  }, [notify]);
+
+  const toggleNA = useCallback(() => {
+    const next = !naRef.current;
+    setNaMode(next);
+    storeNAMode(next);
+    if (next && hasAlcohol(recipeRef.current)) {
+      const { items } = toNonAlcoholic(recipeRef.current);
+      setRecipe(items);
+      setRecipeName((n) => naName(n || 'Мой коктейль'));
+      notify('Безалкогольный режим: рецепт переведён в 0%');
+    } else {
+      notify(next ? 'Безалкогольный режим включён' : 'Безалкогольный режим выключен');
+    }
+  }, [notify]);
+
   const loadFromBuilder = useCallback((name: string, items: RecipeItem[]) => loadRecipe(name, items, false), [loadRecipe]);
   const loadFromDiscovery = useCallback(
     (name: string, items: RecipeItem[]) => {
@@ -153,7 +203,7 @@ export default function App() {
   }, []);
 
   // ── Баланс ──
-  const balance = useMemo(() => (balanceOn ? analyzeBalance(recipe) : null), [balanceOn, recipe]);
+  const balance = useMemo(() => (balanceOn ? analyzeBalance(recipe, { nonAlcoholic: naMode }) : null), [balanceOn, recipe, naMode]);
   const suggestedIds = useMemo(() => balance?.suggestions.map((s) => s.id) ?? [], [balance]);
   const recipeIds = useMemo(() => recipe.map((r) => r.id), [recipe]);
 
@@ -215,6 +265,20 @@ export default function App() {
           ))}
         </nav>
 
+        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggleNA}
+          aria-pressed={naMode}
+          className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs transition ${
+            naMode ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-200' : 'border-[#27272A] text-zinc-400 hover:text-white'
+          }`}
+          title="Безалкогольный режим: рецепты 0% и замены вместо алкоголя"
+        >
+          <GlassWater size={14} />
+          <span className="font-mono">0%</span>
+          <span className="hidden md:inline">{naMode ? 'вкл' : 'выкл'}</span>
+        </button>
         <button
           type="button"
           onClick={() => setShowSettings(true)}
@@ -224,6 +288,7 @@ export default function App() {
           <Settings2 size={14} />
           <span className="hidden md:inline">ИИ {claudeSample ? '· Claude' : serverAI ? '· сервер' : aiSettings?.apiKey ? '· вкл' : '· выкл'}</span>
         </button>
+        </div>
       </header>
 
       {/* ── 3D-лаборатория (остаётся смонтированной, чтобы не пересоздавать WebGL) ── */}
@@ -235,6 +300,7 @@ export default function App() {
             selectedId={selectedId}
             time={time}
             suggestedIds={suggestedIds}
+            naMode={naMode}
             onSelect={setSelectedId}
             onAdd={addIngredient}
           />
@@ -243,6 +309,7 @@ export default function App() {
           <div className="pointer-events-none absolute bottom-3 left-3 top-3 z-10 flex flex-col lg:bottom-[200px]">
             {selected ? (
               <NodeInspector
+                naMode={naMode}
                 ingredient={selected}
                 inRecipe={recipeIds.includes(selected.id)}
                 recipeIds={recipeIds}
@@ -292,6 +359,8 @@ export default function App() {
 
         <aside className="thin-scroll w-full shrink-0 border-t border-[#27272A] bg-zinc-950/40 lg:w-[400px] lg:overflow-y-auto lg:border-l lg:border-t-0">
           <CocktailBuilder
+            naMode={naMode}
+            onMakeNonAlcoholic={makeNonAlcoholic}
             name={recipeName}
             recipe={recipe}
             selectedId={selectedId}
@@ -311,7 +380,7 @@ export default function App() {
 
       {mode === 'discovery' && (
         <main className="thin-scroll min-h-0 flex-1 overflow-y-auto">
-          <DiscoveryPanel onLoadToLab={loadFromDiscovery} aiSettings={aiSettings} claudeSample={claudeSample} serverAI={serverAI} onOpenSettings={() => setShowSettings(true)} />
+          <DiscoveryPanel onLoadToLab={loadFromDiscovery} aiSettings={aiSettings} claudeSample={claudeSample} serverAI={serverAI} naMode={naMode} onOpenSettings={() => setShowSettings(true)} />
         </main>
       )}
 

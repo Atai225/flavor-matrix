@@ -5,6 +5,8 @@ import type { AISettings } from './recommendationEngine';
 
 const KEY_SAVED = 'flavor-matrix:saved-recipes';
 const KEY_AI = 'flavor-matrix:ai-settings';
+const KEY_BAR = 'flavor-matrix:my-bar';
+const KEY_NA = 'flavor-matrix:na-mode';
 
 export interface SavedRecipe {
   id: string;
@@ -46,3 +48,9 @@ export const storeAISettings = (s: AISettings | null) => {
   }
   return write(KEY_AI, s);
 };
+
+export const loadMyBar = () => read<string[]>(KEY_BAR, []);
+export const storeMyBar = (ids: string[]) => write(KEY_BAR, ids);
+
+export const loadNAMode = () => read<boolean>(KEY_NA, false);
+export const storeNAMode = (on: boolean) => write(KEY_NA, on);

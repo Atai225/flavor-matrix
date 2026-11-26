@@ -36,7 +36,7 @@ const p = (sweet: number, sour: number, bitter: number, boozy: number, herbal: n
 type BaseIngredient = Omit<Ingredient, 'links'>;
 
 // ─────────────────────────────────────────────────────────────
-// Ингредиенты (46 позиций)
+// Ингредиенты (46 классических + 6 безалкогольных)
 // ─────────────────────────────────────────────────────────────
 
 const BASE: BaseIngredient[] = [
@@ -340,7 +340,59 @@ const BASE: BaseIngredient[] = [
     vibeTags: ['игристый', 'праздничный', 'лёгкий', 'пузырьки'], color: '#A5F3FC',
     descriptor: 'игристое просекко', fadeWord: 'пузырьки',
   },
+
+  // ── Безалкогольные альтернативы ──
+  {
+    id: 'na_gin', name: 'Безалкогольный джин', category: 'spirit', abv: 0, defaultUnit: 'ml', defaultAmount: 50, naAlternative: true,
+    profile: p(1, 0, 2, 2, 8), tastingPhase: 'aroma', secondaryPhase: 'body',
+    vibeTags: ['травяной', 'можжевельник', 'свежий', 'безалкогольный'], color: '#FEF9C3',
+    descriptor: 'можжевеловый настой без градуса', fadeWord: 'можжевельник',
+  },
+  {
+    id: 'na_spirit', name: 'Безалкогольный дистиллят', category: 'spirit', abv: 0, defaultUnit: 'ml', defaultAmount: 50, naAlternative: true,
+    profile: p(1, 0, 1, 2, 4), tastingPhase: 'body',
+    vibeTags: ['нейтральный', 'лёгкий', 'безалкогольный'], color: '#E7E5E4',
+    descriptor: 'лёгкая основа дистиллята', fadeWord: 'основа',
+  },
+  {
+    id: 'smoky_tea', name: 'Копчёный чай лапсанг', category: 'spirit', abv: 0, defaultUnit: 'ml', defaultAmount: 50, naAlternative: true,
+    profile: p(1, 0, 4, 1, 5), tastingPhase: 'finish', secondaryPhase: 'aroma',
+    vibeTags: ['дымный', 'чайный', 'тёплый', 'безалкогольный'], color: '#A16207',
+    descriptor: 'копчёный лапсанг', fadeWord: 'дым',
+  },
+  {
+    id: 'na_aperitivo', name: 'Безалкогольный биттер-аперитив', category: 'liqueur', abv: 0, defaultUnit: 'ml', defaultAmount: 30, naAlternative: true,
+    profile: p(6, 1, 7, 0, 4), tastingPhase: 'finish', secondaryPhase: 'body',
+    vibeTags: ['горький', 'аперитив', 'апельсиновый', 'безалкогольный'], color: '#F87171',
+    descriptor: 'горчинка безалкогольного аперитива', fadeWord: 'горечь',
+  },
+  {
+    id: 'na_sparkling', name: 'Безалкогольное игристое', category: 'mixer', abv: 0, defaultUnit: 'ml', defaultAmount: 90, naAlternative: true,
+    maxAmount: 150, carbonated: true,
+    profile: p(5, 3, 0, 0, 1), tastingPhase: 'aroma', secondaryPhase: 'body',
+    vibeTags: ['игристый', 'праздничный', 'лёгкий', 'пузырьки', 'безалкогольный'], color: '#CFFAFE',
+    descriptor: 'безалкогольное игристое', fadeWord: 'пузырьки',
+  },
+  {
+    id: 'elderflower_syrup', name: 'Сироп бузины', category: 'syrup', abv: 0, defaultUnit: 'ml', defaultAmount: 15, naAlternative: true,
+    profile: p(9, 1, 0, 0, 3), tastingPhase: 'aroma', secondaryPhase: 'body',
+    vibeTags: ['цветочный', 'сладкий', 'лёгкий', 'безалкогольный'], color: '#FEFCE8',
+    descriptor: 'цветочный сироп бузины', fadeWord: 'цветы',
+  },
 ];
+
+/**
+ * Безалкогольные «двойники»: перенимают связи своих оригиналов
+ * (синергия чуть ниже, линии — экспериментальные).
+ */
+const MIRRORS: Record<string, string[]> = {
+  na_gin: ['gin'],
+  na_spirit: ['vodka', 'white_rum', 'tequila'],
+  smoky_tea: ['mezcal', 'scotch', 'bourbon', 'dark_rum'],
+  na_aperitivo: ['campari', 'aperol', 'amaro', 'sweet_vermouth', 'jagermeister'],
+  na_sparkling: ['prosecco'],
+  elderflower_syrup: ['elderflower'],
+};
 
 // ─────────────────────────────────────────────────────────────
 // Связи. Записываются один раз парой и становятся двусторонними.
@@ -481,6 +533,17 @@ function buildLinks(): Map<string, IngredientLink[]> {
     add(a, b, synergy, type);
     add(b, a, synergy, type);
   }
+  // Двойники: копируем связи оригиналов
+  const mirrorOf = new Map<string, string[]>();
+  for (const [na, originals] of Object.entries(MIRRORS)) for (const o of originals) mirrorOf.set(o, [...(mirrorOf.get(o) ?? []), na]);
+  for (const [a, b, synergy] of PAIRS) {
+    for (const na of mirrorOf.get(a) ?? []) if (na !== b && ids.has(na)) { add(na, b, Math.max(50, synergy - 6), 'experimental'); add(b, na, Math.max(50, synergy - 6), 'experimental'); }
+    for (const na of mirrorOf.get(b) ?? []) if (na !== a && ids.has(na)) { add(na, a, Math.max(50, synergy - 6), 'experimental'); add(a, na, Math.max(50, synergy - 6), 'experimental'); }
+    // Оба конца — двойники (безалкогольный джин ↔ безалкогольный аперитив)
+    for (const na of mirrorOf.get(a) ?? [])
+      for (const nb of mirrorOf.get(b) ?? []) if (na !== nb) { add(na, nb, Math.max(50, synergy - 10), 'experimental'); add(nb, na, Math.max(50, synergy - 10), 'experimental'); }
+  }
+
   const result = new Map<string, IngredientLink[]>();
   map.forEach((links, id) => result.set(id, [...links.values()].sort((x, y) => y.synergy - x.synergy)));
   return result;

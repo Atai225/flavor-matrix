@@ -1,16 +1,21 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import {
-  Ban, Dna, Heart, Loader2, Search, Shuffle, Sparkles, Wand2, Wine, Bot, RotateCcw,
+  Ban, Dna, Heart, Loader2, Search, Shuffle, Sparkles, Wand2, Wine, Bot, RotateCcw, Warehouse,
 } from 'lucide-react';
-import { COCKTAILS, COCKTAIL_MAP, GLASS_LABEL, METHOD_LABEL } from '../data/cocktails';
+import { GLASS_LABEL, METHOD_LABEL } from '../data/cocktails';
 import { CATEGORIES, CATEGORY_MAP, INGREDIENTS, getIngredient, unitLabel } from '../data/ingredients';
 import type { Category, Cocktail, RecipeItem } from '../data/types';
+
+type PoolProps = { pool: Cocktail[] };
 import { BALANCE_LABELS } from '../utils/mixologyMath';
 import {
   MOOD_CHIPS, cocktailStats, composeSignature, isEmptyQuery, matchMood, mergeQueries, parseQuery, parseWithAI,
   parseWithClaude, parseWithServer, rankByPreferences, similarCocktails, type AISettings, type ParsedQuery,
 } from '../utils/recommendationEngine';
 import { describeSampleError, type ClaudeSample } from '../utils/claudeBridge';
+import { cocktailPool, originalIdOf, swapsOf } from '../utils/nonAlcoholic';
+import MyBarPanel from './MyBarPanel';
+import { CocktailMini, Composition } from './CocktailCards';
 import { Bar, Button, MatchBadge, Panel, SectionTitle, Tag } from './ui';
 
 interface Props {
@@ -20,24 +25,29 @@ interface Props {
   claudeSample: ClaudeSample | null;
   /** Есть свой сервер /api/ai с ключом (полная версия на Vercel) */
   serverAI: boolean;
+  /** Безалкогольный режим */
+  naMode: boolean;
   onOpenSettings: () => void;
 }
 
-type Tab = 'favorite' | 'ingredients' | 'mood';
+type Tab = 'favorite' | 'ingredients' | 'mood' | 'bar';
 
-export default function DiscoveryPanel({ onLoadToLab, aiSettings, claudeSample, serverAI, onOpenSettings }: Props) {
+export default function DiscoveryPanel(props: Props) {
+  const { onLoadToLab, naMode } = props;
   const [tab, setTab] = useState<Tab>('favorite');
+  const pool = useMemo(() => cocktailPool(naMode), [naMode]);
   const tabs: { id: Tab; label: string; icon: ReactNode }[] = [
     { id: 'favorite', label: 'По любимому коктейлю', icon: <Wine size={15} /> },
     { id: 'ingredients', label: 'По ингредиентам', icon: <Heart size={15} /> },
     { id: 'mood', label: 'Хочу чего-то такого…', icon: <Wand2 size={15} /> },
+    { id: 'bar', label: 'Мой бар', icon: <Warehouse size={15} /> },
   ];
   return (
     <div className="mx-auto max-w-6xl px-3 py-5 sm:px-6">
       <div className="mb-5">
         <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">Подбор коктейля</h1>
         <p className="mt-1 text-sm text-zinc-400">
-          Три способа найти свой напиток: от любимого коктейля, от ингредиентов или от настроения. Любой результат можно разобрать в 3D-лаборатории.
+          Найдите свой напиток: от любимого коктейля, от ингредиентов, от настроения или от того, что есть у вас дома. Любой результат можно разобрать в 3D-лаборатории.
         </p>
       </div>
       <div className="mb-5 flex flex-wrap gap-2">
@@ -57,9 +67,15 @@ export default function DiscoveryPanel({ onLoadToLab, aiSettings, claudeSample, 
           </button>
         ))}
       </div>
-      {tab === 'favorite' && <FavoriteTab onLoadToLab={onLoadToLab} />}
-      {tab === 'ingredients' && <IngredientsTab onLoadToLab={onLoadToLab} />}
-      {tab === 'mood' && <MoodTab onLoadToLab={onLoadToLab} aiSettings={aiSettings} claudeSample={claudeSample} serverAI={serverAI} onOpenSettings={onOpenSettings} />}
+      {naMode && (
+        <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-2.5 text-sm text-emerald-200">
+          Безалкогольный режим: все рецепты показаны в версии 0% — с заменами вместо алкоголя.
+        </div>
+      )}
+      {tab === 'favorite' && <FavoriteTab onLoadToLab={onLoadToLab} pool={pool} />}
+      {tab === 'ingredients' && <IngredientsTab onLoadToLab={onLoadToLab} pool={pool} naMode={naMode} />}
+      {tab === 'mood' && <MoodTab {...props} pool={pool} />}
+      {tab === 'bar' && <MyBarPanel onLoadToLab={onLoadToLab} pool={pool} naMode={naMode} />}
     </div>
   );
 }
@@ -68,81 +84,27 @@ export default function DiscoveryPanel({ onLoadToLab, aiSettings, claudeSample, 
 // Общие кусочки
 // ─────────────────────────────────────────────────────────────
 
-function Composition({ items }: { items: RecipeItem[] }) {
-  return (
-    <ul className="space-y-1">
-      {items.map((i) => {
-        const ing = getIngredient(i.id);
-        return (
-          <li key={i.id} className="flex items-center gap-2 text-sm">
-            <span className="h-2 w-2 rounded-full" style={{ background: ing.color }} />
-            <span className="flex-1 text-zinc-200">{ing.name}</span>
-            <span className="font-mono text-xs text-amber-300">
-              {i.amount} {unitLabel(ing)}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function CocktailMini({
-  c, right, footer, onOpen, onLab,
-}: { c: Cocktail; right?: ReactNode; footer?: ReactNode; onOpen?: () => void; onLab: () => void }) {
-  const s = cocktailStats(c);
-  return (
-    <div className="glass flex flex-col rounded-2xl p-4 transition hover:border-zinc-600">
-      <div className="flex items-start justify-between gap-2">
-        <button type="button" onClick={onOpen} className={`min-w-0 text-left ${onOpen ? 'hover:text-amber-200' : 'cursor-default'}`}>
-          <div className="truncate font-semibold text-white">{c.name}</div>
-          <div className="truncate text-xs text-zinc-500">{c.nameEn}</div>
-        </button>
-        {right}
-      </div>
-      <div className="mt-2 flex flex-wrap gap-1">
-        {c.ingredients.map((i) => {
-          const ing = getIngredient(i.id);
-          return <Tag key={i.id} color={ing.color}>{ing.name}</Tag>;
-        })}
-      </div>
-      <div className="mt-2 font-mono text-[11px] text-zinc-500">
-        {s.abv.toFixed(1)}% ABV · {METHOD_LABEL[c.method].split(' · ')[0]} · {GLASS_LABEL[c.glass].split(' · ')[0]}
-      </div>
-      {footer && <div className="mt-2 text-xs leading-relaxed text-zinc-400">{footer}</div>}
-      <div className="mt-auto flex gap-2 pt-3">
-        {onOpen && (
-          <Button className="flex-1" onClick={onOpen}>
-            Подробнее
-          </Button>
-        )}
-        <Button variant="cyan" className="flex-1" onClick={onLab}>
-          <Dna size={13} /> В 3D
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 // ─────────────────────────────────────────────────────────────
 // 1. По любимому коктейлю
 // ─────────────────────────────────────────────────────────────
 
-function FavoriteTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
+function FavoriteTab({ onLoadToLab, pool }: { onLoadToLab: Props['onLoadToLab'] } & PoolProps) {
   const [query, setQuery] = useState('');
+  // Храним id оригинала — так выбор не теряется при переключении режима 0%
   const [selected, setSelected] = useState<string>('negroni');
   const list = useMemo(() => {
     const q = query.trim().toLowerCase().replace(/ё/g, 'е');
-    if (!q) return COCKTAILS;
-    return COCKTAILS.filter((c) =>
+    if (!q) return pool;
+    return pool.filter((c) =>
       [c.name, c.nameEn, ...c.vibeTags, ...c.ingredients.map((i) => getIngredient(i.id).name)].some((s) =>
         s.toLowerCase().replace(/ё/g, 'е').includes(q),
       ),
     );
-  }, [query]);
-  const c = COCKTAIL_MAP[selected];
+  }, [query, pool]);
+  const c = pool.find((x) => originalIdOf(x) === selected) ?? pool[0];
   const s = cocktailStats(c);
-  const similar = useMemo(() => similarCocktails(selected, 4), [selected]);
+  const similar = useMemo(() => similarCocktails(c.id, 4, pool), [c.id, pool]);
+  const swaps = swapsOf(c);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
@@ -161,9 +123,9 @@ function FavoriteTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
             <button
               key={x.id}
               type="button"
-              onClick={() => setSelected(x.id)}
+              onClick={() => setSelected(originalIdOf(x))}
               className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
-                x.id === selected ? 'bg-amber-500/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800/60'
+                originalIdOf(x) === selected ? 'bg-amber-500/15 text-amber-100' : 'text-zinc-300 hover:bg-zinc-800/60'
               }`}
             >
               <span className="truncate">{x.name}</span>
@@ -196,6 +158,16 @@ function FavoriteTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
             <div>
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Состав</div>
               <Composition items={c.ingredients} />
+              {swaps.length > 0 && (
+                <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-2.5 text-xs">
+                  <div className="mb-1 font-semibold text-emerald-300">Замены для версии 0%</div>
+                  {swaps.map((w) => (
+                    <div key={w.from} className="text-zinc-400">
+                      <span className="text-zinc-300 line-through decoration-rose-400/60">{getIngredient(w.from).name}</span> → {w.note}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-[11px] text-zinc-400">
                 <div>Метод: <span className="text-zinc-200">{METHOD_LABEL[c.method]}</span></div>
                 <div>Бокал: <span className="text-zinc-200">{GLASS_LABEL[c.glass]}</span></div>
@@ -227,7 +199,7 @@ function FavoriteTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
                   </div>
                 }
                 footer={r.note}
-                onOpen={() => setSelected(r.cocktail.id)}
+                onOpen={() => setSelected(originalIdOf(r.cocktail))}
                 onLab={() => onLoadToLab(r.cocktail.name, r.cocktail.ingredients)}
               />
             ))}
@@ -244,14 +216,14 @@ function FavoriteTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
 
 type Pref = 'like' | 'dislike';
 
-function IngredientsTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) {
+function IngredientsTab({ onLoadToLab, pool, naMode }: { onLoadToLab: Props['onLoadToLab']; naMode: boolean } & PoolProps) {
   const [prefs, setPrefs] = useState<Record<string, Pref>>({ gin: 'like', lime: 'like' });
   const [blockedCats, setBlockedCats] = useState<Category[]>([]);
   const results = useMemo(() => {
     const likes = Object.keys(prefs).filter((k) => prefs[k] === 'like');
     const dislikes = Object.keys(prefs).filter((k) => prefs[k] === 'dislike');
-    return rankByPreferences(likes, dislikes, blockedCats);
-  }, [prefs, blockedCats]);
+    return rankByPreferences(likes, dislikes, blockedCats, pool);
+  }, [prefs, blockedCats, pool]);
   const ok = results.filter((r) => r.match > 0);
   const blocked = results.filter((r) => r.match === 0);
 
@@ -309,7 +281,7 @@ function IngredientsTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) 
                 {blockedCats.includes(cat.id) && <span className="ml-2 text-rose-400">· исключено</span>}
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {INGREDIENTS.filter((i) => i.category === cat.id).map((i) => {
+                {INGREDIENTS.filter((i) => i.category === cat.id && !(naMode && i.abv > 0)).map((i) => {
                   const p = prefs[i.id];
                   return (
                     <button
@@ -380,7 +352,7 @@ function IngredientsTab({ onLoadToLab }: { onLoadToLab: Props['onLoadToLab'] }) 
 // 3. «Хочу чего-то такого…»
 // ─────────────────────────────────────────────────────────────
 
-function MoodTab({ onLoadToLab, aiSettings, claudeSample, serverAI, onOpenSettings }: Props) {
+function MoodTab({ onLoadToLab, aiSettings, claudeSample, serverAI, naMode, onOpenSettings, pool }: Props & PoolProps) {
   const [text, setText] = useState('кислое, освежающее и ягодное');
   const [query, setQuery] = useState<ParsedQuery>(() => parseQuery('кислое, освежающее и ягодное'));
   const [loading, setLoading] = useState(false);
@@ -441,8 +413,8 @@ function MoodTab({ onLoadToLab, aiSettings, claudeSample, serverAI, onOpenSettin
     }
   };
 
-  const results = useMemo(() => matchMood(query, 3), [query]);
-  const signature = useMemo(() => composeSignature(query), [query]);
+  const results = useMemo(() => matchMood(query, 3, pool), [query, pool]);
+  const signature = useMemo(() => composeSignature(query, { nonAlcoholic: naMode }), [query, naMode]);
   const empty = isEmptyQuery(query);
 
   return (

@@ -3,8 +3,10 @@ import { Minus, Plus, X } from 'lucide-react';
 import { CATEGORY_MAP, INGREDIENT_MAP, unitLabel } from '../data/ingredients';
 import type { Ingredient, TastingPhase } from '../data/types';
 import { Bar, Button, Tag } from './ui';
+import { naReplacementFor } from '../utils/nonAlcoholic';
 
 interface Props {
+  naMode?: boolean;
   ingredient: Ingredient;
   inRecipe: boolean;
   recipeIds: string[];
@@ -15,9 +17,10 @@ interface Props {
 
 const PHASE_LABEL: Record<TastingPhase, string> = { aroma: 'Аромат (0–5 с)', body: 'Тело (5–20 с)', finish: 'Финиш (20–45 с)' };
 
-function NodeInspector({ ingredient: ing, inRecipe, recipeIds, onAdd, onRemove, onSelect }: Props) {
+function NodeInspector({ naMode = false, ingredient: ing, inRecipe, recipeIds, onAdd, onRemove, onSelect }: Props) {
   const cat = CATEGORY_MAP[ing.category];
   const recipeSet = new Set(recipeIds);
+  const rep = naMode ? naReplacementFor(ing.id) : undefined;
   return (
     <div className="glass thin-scroll pointer-events-auto max-h-full w-[300px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-2xl p-4 shadow-2xl shadow-black/50">
       <div className="flex items-start justify-between gap-2">
@@ -98,8 +101,8 @@ function NodeInspector({ ingredient: ing, inRecipe, recipeIds, onAdd, onRemove, 
             <Minus size={14} /> Убрать из шейкера
           </Button>
         ) : (
-          <Button variant="primary" className="flex-1" onClick={() => onAdd(ing.id)}>
-            <Plus size={14} /> В шейкер
+          <Button variant="primary" className="flex-1" onClick={() => onAdd(ing.id)} disabled={rep === null}>
+            <Plus size={14} /> {rep ? `В шейкер → ${INGREDIENT_MAP[rep.id].name}` : rep === null ? 'В режиме 0% нет замены' : 'В шейкер'}
           </Button>
         )}
       </div>
